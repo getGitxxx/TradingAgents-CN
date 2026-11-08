@@ -24,6 +24,7 @@ class DataSourceConfig:
         self._configs["tushare"] = {
             "enabled": self._get_bool_env("TUSHARE_ENABLED", True),
             "token": os.getenv("TUSHARE_TOKEN", ""),
+            "api_url": os.getenv("TUSHARE_API_URL", ""),  # 中转站 API URL，为空则使用官方默认
             "timeout": self._get_int_env("TUSHARE_TIMEOUT", 30),
             "rate_limit": self._get_float_env("TUSHARE_RATE_LIMIT", 0.1),
             "max_retries": self._get_int_env("TUSHARE_MAX_RETRIES", 3),

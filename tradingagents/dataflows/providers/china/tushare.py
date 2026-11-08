@@ -53,6 +53,7 @@ class TushareProvider(BaseStockDataProvider):
         self.config = get_provider_config("tushare")
         self.token_source = None  # 记录 Token 来源: 'database' 或 'env'
         self._event_loop_closed = False  # 🔥 标记事件循环是否已关闭
+        self._db_api_endpoint = None  # 🔧 数据库中配置的中转站 API URL
 
         if not TUSHARE_AVAILABLE:
             self.logger.error("❌ Tushare库未安装，请运行: pip install tushare")
@@ -94,6 +95,11 @@ class TushareProvider(BaseStockDataProvider):
                         ds_type = ds_config.get('type')
                         self.logger.info(f"🔍 [DB查询] 检查数据源: {ds_type}")
                         if ds_type == 'tushare':
+                            # 🔧 记录数据库中配置的 endpoint（中转站 API URL）
+                            endpoint = ds_config.get('endpoint') or ''
+                            if endpoint and endpoint not in ('http://api.tushare.pro',):
+                                self._db_api_endpoint = endpoint
+                                self.logger.info(f"🔧 [DB查询] 数据库配置了自定义 API URL: {endpoint}")
                             api_key = ds_config.get('api_key')
                             self.logger.info(f"✅ [DB查询] 找到 Tushare 配置，api_key 长度: {len(api_key) if api_key else 0}")
                             if api_key and not api_key.startswith("your_"):
@@ -165,6 +171,13 @@ class TushareProvider(BaseStockDataProvider):
                     # 直接传入 token 给 pro_api，不调用 set_token 避免写 tk.csv 文件
                     # ts.set_token(token) 会把 token 缓存到 ~/tk.csv，在沙箱等受限环境会 Permission denied
                     api = ts.pro_api(token)
+
+                    # 🔧 支持中转站 API URL（覆盖官方默认地址）
+                    # 优先级：环境变量 TUSHARE_API_URL > 数据库 endpoint
+                    custom_api_url = self.config.get('api_url') or os.getenv("TUSHARE_API_URL", "") or (self._db_api_endpoint or "")
+                    if custom_api_url:
+                        api._DataApi__http_url = custom_api_url
+                        self.logger.info(f"🔧 使用自定义 Tushare API URL: {custom_api_url}")
 
                     if validate:
                         test_data = api.stock_basic(list_status='L', limit=1)
@@ -373,22 +386,41 @@ class TushareProvider(BaseStockDataProvider):
         try:
             # 使用通配符一次性获取全市场行情
             # 3*.SZ: 创业板  6*.SH: 上交所  0*.SZ: 深交所主板  4*.BJ,8*.BJ,9*.BJ: 北交所
-            df = await asyncio.to_thread(
-                self.api.rt_k,
-                ts_code='3*.SZ,6*.SH,0*.SZ,4*.BJ,8*.BJ,9*.BJ'
-            )
+            date_str = ''
+            try:
+                df = await asyncio.to_thread(
+                    self.api.rt_k,
+                    ts_code='3*.SZ,6*.SH,0*.SZ,4*.BJ,8*.BJ,9*.BJ'
+                )
+                fetch_source = "rt_k"
+            except Exception as rtk_err:
+                # 🔧 中转站/部分账号无 rt_k 权限 → 回退到 daily(trade_date=) 全市场日线
+                self.logger.warning(f"⚠️ rt_k 不可用（{str(rtk_err)[:80]}），回退到 daily(trade_date) 全市场行情")
+                latest = await self.find_latest_trade_date()  # YYYY-MM-DD
+                if not latest:
+                    self.logger.error("❌ 无法确定最新交易日，跳过实时行情")
+                    return None
+                date_str = latest.replace('-', '')
+                df = await asyncio.to_thread(
+                    self.api.daily,
+                    trade_date=date_str
+                )
+                fetch_source = f"daily({date_str})"
 
             if df is None or df.empty:
                 self.logger.warning("⚠️ rt_k 接口返回空数据")
                 return None
 
-            self.logger.info(f"✅ 获取到 {len(df)} 只股票的实时行情")
+            self.logger.info(f"✅ 获取到 {len(df)} 只股票的实时行情 (来源: {fetch_source})")
 
-            # 🔥 获取当前日期（UTC+8）
+            # 🔥 获取交易日期：daily 回退用实际查询日；rt_k 用当前日期（UTC+8）
             from datetime import datetime, timezone, timedelta
             cn_tz = timezone(timedelta(hours=8))
             now_cn = datetime.now(cn_tz)
-            trade_date = now_cn.strftime("%Y%m%d")  # 格式：20251114（与 Tushare 格式一致）
+            if 'date_str' in dir() and date_str:
+                trade_date = date_str  # 格式：20261106（与 Tushare 格式一致）
+            else:
+                trade_date = now_cn.strftime("%Y%m%d")  # 格式：20251114
 
             # 转换为字典格式
             result = {}
@@ -625,7 +657,7 @@ class TushareProvider(BaseStockDataProvider):
             df = await asyncio.to_thread(
                 self.api.daily_basic,
                 trade_date=date_str,
-                fields='ts_code,total_mv,circ_mv,pe,pb,turnover_rate,volume_ratio,pe_ttm,pb_mrq'
+                fields='ts_code,total_mv,circ_mv,pe,pb,turnover_rate,volume_ratio,pe_ttm'
             )
             
             if df is not None and not df.empty:
@@ -661,7 +693,7 @@ class TushareProvider(BaseStockDataProvider):
                 ts_code=ts_code,
                 start_date=start_str,
                 end_date=end_str,
-                fields='ts_code,trade_date,close,pe_ttm,pb,ps_ttm,pcf_ncf_ttm',
+                fields='ts_code,trade_date,close,pe_ttm,pb,ps_ttm',
             )
             if df is None or df.empty:
                 self.logger.warning(f"⚠️ Tushare 估值历史为空: {code} {start_date}~{end_date}")

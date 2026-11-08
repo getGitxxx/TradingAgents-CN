@@ -1700,6 +1700,15 @@ class ConfigService:
 
                         # 直接传入 token 给 pro_api，不调用 set_token 避免写 tk.csv 文件
                         pro = ts.pro_api(api_key)
+
+                        # 🔧 支持中转站 API URL：优先级 环境变量 TUSHARE_API_URL > 数据库 endpoint
+                        custom_api_url = os.getenv('TUSHARE_API_URL', '')
+                        if not custom_api_url:
+                            custom_api_url = getattr(ds_config, 'endpoint', '') or ''
+                        if custom_api_url:
+                            pro._DataApi__http_url = custom_api_url
+                            logger.info(f"🔧 [TEST] 使用自定义 Tushare API URL: {custom_api_url}")
+
                         # 获取交易日历（轻量级测试）
                         df = pro.trade_cal(exchange='SSE', start_date='20240101', end_date='20240101')
                     finally:

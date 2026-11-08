@@ -85,7 +85,8 @@ class TushareAdapter(DataSourceAdapter):
             return None
         try:
             # 🔥 新增 ps, ps_ttm, total_share, float_share, dv_ratio, dv_ttm 字段
-            fields = "ts_code,total_mv,circ_mv,pe,pb,ps,turnover_rate,volume_ratio,pe_ttm,pb_mrq,ps_ttm,total_share,float_share,dv_ratio,dv_ttm"
+            # 🔧 中转站不支持 pb_mrq 字段，已移除（下游可用 pb 替代）
+            fields = "ts_code,total_mv,circ_mv,pe,pb,ps,turnover_rate,volume_ratio,pe_ttm,ps_ttm,total_share,float_share,dv_ratio,dv_ttm"
             df = self._provider.api.daily_basic(trade_date=trade_date, fields=fields)
             if df is not None and not df.empty:
                 logger.info(
